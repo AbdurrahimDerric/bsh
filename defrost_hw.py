@@ -23,7 +23,7 @@ df = pd.read_csv("SDR30EU-32C-Data-mod.csv", encoding="utf-16")
 defrost  = df["FgDefrHeater"]
 
 # drop the label column and other columns from the main dataset
-df = df.drop([], axis=1)
+df = df.drop(["FgDefrHeater", "Time", "AT", "AH"], axis=1)
 print(len(list(df)))
 
 
@@ -32,8 +32,7 @@ print(len(list(df)))
 defrsot_intervals = get_defrsot_intervals(defrost)
 print("num of defrost intervals, ",len(defrsot_intervals))
 
-# standerdize the data (crucial)
-dataset, scaler = standardize(df.values)
+
 
 # get the intervals between the defrostings (used to estimate the defrosting)
 intervals_between_defrosts = get_intervals_between_defrosts(dataset, defrsot_intervals)
@@ -82,18 +81,21 @@ split_at = int(0.50 * len(new_intervals))
 train  = new_intervals[:split_at]
 test = new_intervals[split_at:]
 
+train, scaler = standardize(dataset)
+test = standardize_with_scaler(test, scaler)
+
 #separate data and labels
-train_images = [x[0] for x in train]
+train_data = [x[0] for x in train]
 lstm_train_labels = [x[1] for x in train]
 
-test_images = [x[0] for x in test]
+test_data = [x[0] for x in test]
 lstm_test_labels = [x[1] for x in test]
 
 
 
-train_images = np.asarray(train_images)
-test_images = np.asarray(test_images)
-# print(test_images)
+train_data = np.asarray(train_data)
+test_data = np.asarray(test_data)
+# print(test_data)
 # print(lstm_test_labels)
 
 
@@ -105,23 +107,23 @@ lstm_train_labels = np.asarray(lstm_train_labels)
 lstm_test_labels = np.asarray(lstm_test_labels)
 
 
-print("train image shape ",train_images.shape)
+print("train image shape ",train_data.shape)
 print("train labels ",lstm_train_labels)
 
 
 # create the lstm model and train it.
-model =  create_mlp_model(train_images.shape[1], train_images.shape[2])
+model =  create_mlp_model(train_data.shape[1], train_data.shape[2])
 
 print(model.summary())
-train_model(model, train_images, lstm_train_labels, path, epochs=100, batch_size=64)
+train_model(model, train_data, lstm_train_labels, path, epochs=100, batch_size=64)
 
 
 # model = tf.keras.models.load_model(path)
 
 
 # make predictions
-trainPredict = model.predict(train_images)
-testPredict = model.predict(test_images)
+trainPredict = model.predict(train_data)
+testPredict = model.predict(test_data)
 
 
 print(lstm_train_labels)
@@ -143,3 +145,4 @@ for i in range(len(testPredict)):
 plt.plot(real_predicted)
 plt.legend(["test_samples", "predicted"], bbox_to_anchor=(0.75, 1.15), ncol=2)
 plt.show()
+
