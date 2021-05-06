@@ -1,0 +1,162 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+import tensorflow
+import keras
+from functions import *
+import pandas as pd
+import numpy as np
+tensorflow.random.set_seed(11)
+import matplotlib.pyplot as plt
+SEED = 123  # used to help randomly select the data points
+
+
+# read the data
+train_df = pd.read_csv("train.csv")
+train_df = train_df.drop(["date","meanpressure"], axis =1)
+column_names = list(train_df)
+
+test_df = pd.read_csv("injected_test.csv")
+test_df = test_df.drop(["meanpressure"], axis=1)
+column_names = list(test_df)
+
+with open("anom_indices.pickle","rb") as reader:
+    anom_indices = pickle.load(reader)
+
+# plot all data features
+plt.plot(train_df.values)
+plt.legend(list(train_df))
+plt.show()
+
+
+# get an array out of panda frame
+train_data = train_df.values
+test_data = test_df.values
+
+
+plt.figure("Irregular data")
+plt.plot(test_df.values)
+plt.legend(list(test_df))
+plt.show()
+
+
+# the dataset should be of shape (sample number * feature number)
+# anom indices contains the indices of anomalies in the irregular data
+print('--------------------------------------------------------------------------------------------------------------')
+
+train_data = np.asarray(train_data)
+test_data = np.asarray(test_data)
+
+print('train shape ',train_data.shape)
+print('test shape ', test_data.shape)
+
+""" remove nan values replacing them with zeros"""
+# df, df_with_anoms = remove_nans(df, df_with_anoms)
+
+
+# standardize
+train_std, test_std = standardize(train_data, test_data)
+
+
+# make a lookback, this will prepare the data for the lstm model (num of samples * lookback * num of features)
+lookback = 5
+dataset = np.asarray(make_lookback(train_std, lookback))
+dataset_with_anoms = np.asarray(make_lookback(test_std, lookback))
+print('dataset ', dataset.shape)
+print('dataset anoms ', dataset_with_anoms.shape)
+
+# split train test if needed
+X = np.asarray(dataset)
+X_anoms = np.asarray(dataset_with_anoms)
+
+print('-----------------------------------------------------------------------------------------------------------------')
+
+# constcut the model and train it
+lstm_autoencoder = construct_model(X)
+try:
+    epochs = 100
+    batch = 128
+    lr = 0.001
+    train_model(lstm_autoencoder, X, epochs = epochs, batch = batch, lr=lr)
+except:
+    save_model(lstm_autoencoder,'model_uni.h5')
+    print('saved for exception')
+
+save_model(lstm_autoencoder,'model_uni.h5')
+print('saved normally')
+
+
+lstm_autoencoder = keras.models.load_model('model_uni.h5')
+
+print('-------------------------------------------------------------------------------------------------------------------')
+
+# get the predcition for the irregular dataset names X_anoms
+X_predictions = lstm_autoencoder.predict(X_anoms)
+
+# calculate the error for each timestep, the result will be a (num of samples * num of featues)
+print(X_anoms.shape)
+print(X_predictions.shape)
+
+err = calc_error_groups(X_anoms, X_predictions)
+print("error shape", np.asarray(err).shape)
+
+threshold = 1
+indices = get_pred_anom_indices(err, threshold=threshold)
+print("pred anom indices",indices)
+print("real anom indices", anom_indices)
+
+
+# get the point-point anomaly detection
+detected, detected_indices = detect_anoms(anom_indices, indices)
+
+# create anomly groups, (called neighbourhoods) out of the predicted anomaly points
+neighborhoods = create_neighborhoods(indices, 5)
+print("predicted anoms groups",neighborhoods)
+
+# check if real anom points are detected in predicted groups
+detected_in_neigh, detected_in_neigh_indices = detect_indices_in_neigh(neighborhoods, anom_indices, 5)
+
+# create groups of the real anomalies
+anom_indices_groups = create_neighborhoods(anom_indices, 5)
+print(anom_indices_groups)
+print('the real anom groups size', len(anom_indices_groups))
+
+# compare groups of real anomalies and predcited anomalies
+group_match = compare_groups(anom_indices_groups, neighborhoods, 5)
+
+# print results
+print('matched groups', group_match, 'all predicted groups', len(neighborhoods))
+print('----------------------------------')
+print('detected', detected, ' point anomalies out of', len(anom_indices), ', total predicted anomalities are: ', len(indices))
+print('----------------------------------')
+print(detected_in_neigh, ' detected point anomalies in groups, all predicted groups are: ', len(neighborhoods))
+not_detected = [x for x in anom_indices if x not in detected_in_neigh_indices]
+print('these are some of the not detected: ', not_detected[:10])
+
+
+
+
+
+fig, axs = plt.subplots(3)
+fig.suptitle('irregular dataset reconstructed')
+
+axs[0].plot(test_data)
+# axs[0].plot(min_x_coordinates, y_coordinates, "k")
+# axs[0].plot(max_x_coordinates, y_coordinates, "k")
+axs[0].legend(["input"], loc ="lower right") 
+
+
+recons = [x[0] for x in X_predictions]
+axs[1].plot(recons)
+axs[1].legend(["reconstructed input"], loc ="lower right") 
+
+err_single = [x[0] for x in err]
+axs[2].plot(err_single)
+axs[2].plot([0, len(err_single)], [threshold, threshold])
+axs[2].legend(["error","","","threshold"], loc ="lower right") 
+
+plt.show()
+
+
+
+
+
