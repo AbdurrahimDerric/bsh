@@ -1,0 +1,438 @@
+import random
+import gym
+from gym import spaces
+import numpy as np
+from functions import *
+
+MAX_STEPS = 100000
+
+INITIAL_POWER = 0
+INITIAL_POWER_CONSUMPTION = 0
+TOTAL_CONSUMPTION = 0
+POWER_PER_LEVEL = 10
+POWER_PER_LEVEL_FAN = 3
+MAX_POWER_CONSUMP = 500
+MAX_CONSUMPT = 100000
+EVAP_FAN_SPEED = 0
+
+FOOD_TOLERANCE_THRESHOLD = 20
+INITIAL_FOOD_TOLERANCE = 100
+MIN_TEMP = -100
+TOLERANCE_TEMP = 0
+MIN_TEMP_TOLERANCE = -5
+MAX_TEMP = 45
+AMBIENT_TEMPRATURE = 40
+INITIAL_TEMP = 40
+
+DOOR_OPEN_PROB = 0.001
+
+
+class FridgeEnv(gym.Env):
+    """A Fridge environment for OpenAI gym"""
+
+    """initilize the attributes of the env
+    """
+
+    def __init__(self):
+        super(FridgeEnv, self).__init__()
+
+        # set the values of the feaures of a fridge working session
+        self.inner_temp = INITIAL_TEMP
+        self.food_state = INITIAL_FOOD_TOLERANCE
+        self.power_consump = INITIAL_POWER_CONSUMPTION
+        self.tolerance_temp = TOLERANCE_TEMP
+        self.power_per_level = POWER_PER_LEVEL
+        self.ambient_temp = AMBIENT_TEMPRATURE
+
+        self.total_consump = 0
+        self.current_step = 0
+        self.step_reward = 0
+
+        self.reward_array = []
+        self.door_array = []
+        self.inner_temp_array = []
+        self.power_consump_array = []
+        self.food_state_array = []
+
+        self.door_interval = 0
+
+        # Actions of the format (5 power levels) 
+        self.action_space = spaces.MultiDiscrete([5,5])
+
+        # the observation is done on inner_temp, amb temp, food_tolerance, power_consump
+        self.observation_space = spaces.Box(
+            low=np.array([-15, -15, 0, INITIAL_POWER_CONSUMPTION]),
+            high=np.array(
+                [MAX_TEMP, MAX_TEMP, INITIAL_FOOD_TOLERANCE, MAX_POWER_CONSUMP]),
+            shape=(4,),
+            dtype=np.float16,
+        )
+
+
+    def _next_observation(self):
+        """ Returns next observation
+
+        Returns:
+            array: contatins the current state of the env
+        """
+        # return the cuurent state of the fridge
+        obs = np.array([self.inner_temp, self.ambient_temp,
+                        self.food_state, self.power_consump])
+        return obs
+
+
+    def _take_action(self, action):
+        """applys the action and update env accordingly
+
+            Args:
+                action : contains the value of the ction determined by the model
+        """
+        # change necessary values according to the selected action
+        comp_level, fan_level = action
+
+        if comp_level == 0:
+            # fridge power is off, increase inner temprature
+            self.inner_temp = self.inner_temp + \
+                random.uniform(0, self.ambient_temp/10)
+            self.power_consump = 0
+        else:
+            # power is on
+            # current consumption is based on power level
+            self.power_consump = comp_level * POWER_PER_LEVEL + fan_level * POWER_PER_LEVEL_FAN
+            self.total_consump = self.total_consump + self.power_consump
+            # decrease fridge inner temprature
+            self.inner_temp = self.inner_temp - \
+                random.uniform(1, (comp_level + fan_level/10)/5) - \
+                self.ambient_temp/100
+        # set food tolerance accordin g to the inner temp
+        self.set_food_tolerance()
+
+
+    def step(self, action):
+        """Take a step in the simulation environment
+
+        Args:
+            action :contains the value of the ction determined by the model
+
+        Returns:
+            tuple: obs, reward, done,
+        """
+        # Execute one time step within the environment
+  
+        self._take_action(action)
+        self.open_door()
+        self.update_door_array()
+
+        self.current_step += 1
+
+        # define relatively time passed
+        delay_modifier = self.current_step / MAX_STEPS
+        # define reward based on food tolerance and energy consumption relatively to time passed.
+        comp_level, fan_level = action
+        power = comp_level + fan_level/10
+
+        reward = (self.calculate_food_penalty() * delay_modifier) - \
+            (power * delay_modifier) - (self.calc_temp_penalty())
+
+        # update arrays
+        self.reward_array.append(reward)
+        self.inner_temp_array.append(self.inner_temp)
+        self.power_consump_array.append(self.power_consump)
+        self.food_state_array.append(self.food_state)
+
+        done = self.check_done()
+        obs = self._next_observation()
+        # add current temp and consump values to calculate the episode avg later
+        return obs, reward, done, {}
+
+    def reset(self):
+        """Reset the env betweeen episodes
+
+        Returns:
+            observation : environment current state
+        """
+
+        # Reset the state of the environment to an initial state
+        self.inner_temp = INITIAL_TEMP
+        self.food_state = INITIAL_FOOD_TOLERANCE
+        self.power_consump = INITIAL_POWER_CONSUMPTION
+        self.tolerance_temp = TOLERANCE_TEMP
+        self.power_per_level = POWER_PER_LEVEL
+        self.total_consump = 0
+
+        # reset for each episode
+        self.current_step = 0
+
+        return self._next_observation()
+
+    def reset_arrays(self):
+        self.reward_array = []
+        self.food_state_array = []
+        self.inner_temp_array = []
+        self.door_array = []
+        self.power_consump_array = []
+
+    def get_arrays(self):
+        return self.reward_array, self.food_state_array, self.inner_temp_array, self.door_array, self.power_consump_array
+
+    def render(self, mode="human", close=False):
+        """ render or print necessary info 
+
+        Args:
+            mode: render to this mode. Defaults to "human".
+            close (bool, optional): [description]. Defaults to False.
+        """
+        # print(f'inner temp: {self.inner_temp}')
+        print(f"inner temp avg: {self.temp_avg_eps / (self.current_step + 1)}")
+        print(f"food tolerance: {self.food_tolerance}")
+        print(f"current consumpt: {self.power_consump}")
+        print(f"total_consump: {self.total_consump}")
+        print(f"time : {self.current_step}")
+        
+
+    def set_food_tolerance(self):
+        """update food state according to temprature
+        """
+        if self.inner_temp > self.tolerance_temp:
+            self.food_state = self.food_state - random.uniform(
+                1, self.inner_temp / 20)/5
+
+    def get_array_by_name(self, array_name):
+        array_dict = {
+            "food_state_array": self.food_state_array,
+            "inner_temp_array": self.inner_temp_array,
+            "power_consump_array": self.power_consump_array,
+            "reward_array": self.reward_array,
+            "door_array": self.door_array
+        }
+        return array_dict[array_name]
+
+    def calc_temp_penalty(self):
+        """calculate the penalty according to temprature
+        if the temp is far from desired temprature return highe penalty.
+
+        Returns:
+            [type]: [description]
+        """
+        if self.inner_temp > TOLERANCE_TEMP:
+            temp_penalty = self.inner_temp - TOLERANCE_TEMP
+        elif self.inner_temp < MIN_TEMP_TOLERANCE:
+            temp_penalty = abs(self.inner_temp - MIN_TEMP_TOLERANCE)
+        else:
+            temp_penalty = -10
+
+        return temp_penalty
+
+    def calculate_food_penalty(self):
+        reward = self.food_state - (FOOD_TOLERANCE_THRESHOLD + 10)
+        return reward
+
+    def open_door(self):
+        if probability(DOOR_OPEN_PROB):
+            self.door_interval = random.randint(1, 100)
+            self.inner_temp += self.door_interval/5
+
+    def update_door_array(self):
+        if self.door_interval > 0:
+            self.door_array.append(1)
+            self.door_interval -= 1
+        else:
+            self.door_array.append(0)
+
+    def check_done(self):
+        if (
+            self.food_state <= FOOD_TOLERANCE_THRESHOLD
+            or self.total_consump > MAX_CONSUMPT
+            or self.inner_temp < MIN_TEMP
+        ):
+            done = True
+        else:
+            done = False
+
+        if self.current_step > MAX_STEPS:
+            done = True
+
+        return done
+
+
+
+
+class ClassicFridge():
+    def __init__(self):
+        # set the values of the feaures of a fridge working session
+        self.inner_temp = INITIAL_TEMP
+        self.food_state = INITIAL_FOOD_TOLERANCE
+        self.power_consump = INITIAL_POWER_CONSUMPTION
+        self.tolerance_temp = TOLERANCE_TEMP
+        self.power_per_level = POWER_PER_LEVEL
+        self.ambient_temp = AMBIENT_TEMPRATURE
+
+        self.total_consump = 0
+        self.current_step = 0
+        self.step_reward = 0
+
+        self.door_array = []
+        self.inner_temp_array = []
+        self.power_consump_array = []
+        self.food_state_array = []
+
+        self.door_interval = 0
+
+        # Actions of the format (5 power levels)
+        self.comp_action_space = [0,1,2,3,4]
+        self.fan_action_space = [0,1,2,3,4]
+
+    def _next_observation(self):
+        """ Returns next observation
+
+        Returns:
+            array: contatins the current state of the env
+        """
+        # return the cuurent state of the fridge
+        obs = np.array([self.inner_temp, self.ambient_temp,
+                        self.food_state, self.power_consump])
+        return obs
+    
+    def choose_action(self):
+        """Choose the compressor and the fan level based on temprature sensors
+
+        Returns:
+            tuple : the choosen compressor level and fan level
+        """
+        comp_level = 0
+        fan_level = 0
+        if self.inner_temp > 20:
+            comp_level = self.comp_action_space[4]
+            fan_level = self.fan_action_space[4]
+        elif self.inner_temp > 10 and self.ambient_temp > 30:
+            comp_level = self.comp_action_space[3]
+            fan_level = self.fan_action_space[3]
+        elif (self.inner_temp > 5 and self.ambient_temp > 30) or self.inner_temp > 10:
+            comp_level = self.comp_action_space[2]
+            fan_level = self.fan_action_space[2]
+        elif (self.inner_temp > -5  and self.ambient_temp > 30) or self.inner_temp > 5:
+            comp_level = self.comp_action_space[1]
+            fan_level = self.fan_action_space[1]
+        else:
+            comp_level = self.comp_action_space[0]
+            fan_level = self.fan_action_space[0]
+
+        return comp_level, fan_level
+
+
+
+
+    def _take_action(self, action):
+        """applys the action and update env accordingly
+
+        Args:
+            action : contains the value of the ction determined by the model
+        """
+        # change necessary values according to the selected action
+        comp_level, fan_level = action
+
+        if comp_level == 0:
+            # fridge power is off, increase inner temprature
+            self.inner_temp = self.inner_temp + \
+                random.uniform(0, self.ambient_temp/10)
+            self.power_consump = 0
+        else:
+            # power is on
+            # current consumption is based on power level
+            self.power_consump = comp_level * POWER_PER_LEVEL + fan_level * POWER_PER_LEVEL_FAN
+            self.total_consump = self.total_consump + self.power_consump
+            # decrease fridge inner temprature
+            self.inner_temp = self.inner_temp - \
+                random.uniform(1, (comp_level + fan_level/10)/5) - \
+                self.ambient_temp/100
+        # set food tolerance accordin g to the inner temp
+        self.set_food_tolerance()
+
+    def step(self):
+        """Take a step in the simulation environment
+
+        Args:
+            action :contains the value of the action determined by the model
+        """
+        # Execute one time step within the environment
+        action = self.choose_action()
+        self._take_action(action)
+        self.open_door()
+        self.update_door_array()
+
+        self.current_step += 1
+        # update arrays
+        self.inner_temp_array.append(self.inner_temp)
+        self.power_consump_array.append(self.power_consump)
+        self.food_state_array.append(self.food_state)
+        
+        return self.check_done()
+
+    def reset(self):
+        """Reset the env betweeen episodes
+
+        Returns:
+            observation : environment current state
+        """
+        # Reset the state of the environment to an initial state
+        self.inner_temp = INITIAL_TEMP
+        self.food_state = INITIAL_FOOD_TOLERANCE
+        self.power_consump = INITIAL_POWER_CONSUMPTION
+        self.tolerance_temp = TOLERANCE_TEMP
+        self.power_per_level = POWER_PER_LEVEL
+        self.total_consump = 0
+        # reset for each episode
+        self.current_step = 0
+
+    def reset_arrays(self):
+        self.food_state_array = []
+        self.inner_temp_array = []
+        self.door_array = []
+        self.power_consump_array = []
+
+    def get_arrays(self):
+        return  self.food_state_array, self.inner_temp_array, self.door_array, self.power_consump_array
+
+
+    def set_food_tolerance(self):
+        """update food state according to temprature
+        """
+        if self.inner_temp > self.tolerance_temp:
+            self.food_state = self.food_state - random.uniform(
+                1, self.inner_temp / 20)/5
+
+    def get_array_by_name(self, array_name):
+        array_dict = {
+            "food_state_array": self.food_state_array,
+            "inner_temp_array": self.inner_temp_array,
+            "power_consump_array": self.power_consump_array,
+            "door_array": self.door_array}
+        return array_dict[array_name]
+
+
+    def open_door(self):
+        if probability(DOOR_OPEN_PROB):
+            self.door_interval = random.randint(1, 100)
+            self.inner_temp += self.door_interval/5
+
+    def update_door_array(self):
+        if self.door_interval > 0:
+            self.door_array.append(1)
+            self.door_interval -= 1
+        else:
+            self.door_array.append(0)
+
+    def check_done(self):
+        if (
+            self.food_state <= FOOD_TOLERANCE_THRESHOLD
+            or self.total_consump > MAX_CONSUMPT
+            or self.inner_temp < MIN_TEMP
+        ):
+            done = True
+        else:
+            done = False
+
+        if self.current_step > MAX_STEPS:
+            done = True
+
+        return done
